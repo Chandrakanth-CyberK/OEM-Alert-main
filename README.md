@@ -101,7 +101,21 @@ Notes:
 - Do not commit real secrets. Prefer using a non-committed `.env` file and keep a `.env.example` for reference.
 - Ensure `backend/logs/` exists or adjust `LOG_FILE` path.
 
-### 3) Configure Vite dev proxy (Frontend)
+### 3) Configure Supabase (Frontend)
+
+Create `.env` in project root:
+```env
+VITE_SUPABASE_URL=https://<your-project>.supabase.co
+VITE_SUPABASE_ANON_KEY=<your-anon-key>
+```
+
+Install SDK:
+```powershell
+cd D:\OEMAlert-main
+npm i @supabase/supabase-js
+```
+
+### 4) Configure Vite dev proxy (Frontend)
 
 To avoid CORS in development, proxy `/api` to the backend in `vite.config.ts`:
 ```ts
