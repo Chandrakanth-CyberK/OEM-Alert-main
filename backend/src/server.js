@@ -61,13 +61,25 @@ app.listen(PORT, () => {
 
 
 // Health check endpoint
-app.get('/health', (req, res) => {
-  res.status(200).json({
+app.get('/health', async (req, res) => {
+  const payload = {
     status: 'OK',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     environment: process.env.NODE_ENV
-  });
+  };
+  try {
+    if (process.env.PG_CONNECTION_STRING) {
+      const { pool } = require('./lib/db');
+      if (pool) {
+        await pool.query('select 1');
+        payload.db = 'up';
+      }
+    }
+  } catch (e) {
+    payload.db = 'down';
+  }
+  res.status(payload.db === 'down' ? 500 : 200).json(payload);
 });
 
 // API routes
