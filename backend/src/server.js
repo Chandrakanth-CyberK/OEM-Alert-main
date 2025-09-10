@@ -39,18 +39,19 @@ app.use('/api/', limiter);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Database connection
-// Connect to MongoDB
-mongoose.connect(process.env.MONGODB_URI, {
-  dbName: process.env.DB_NAME,
-})
-.then(() => {
-  console.log('✅ MongoDB connected');
-})
-.catch((error) => {
-  console.error('❌ MongoDB connection error:', error);
-  process.exit(1);
-});
+// Database connection (optional - disabled when migrating to Supabase)
+if (process.env.MONGODB_URI) {
+  mongoose.connect(process.env.MONGODB_URI, { dbName: process.env.DB_NAME })
+    .then(() => {
+      console.log('✅ MongoDB connected');
+    })
+    .catch((error) => {
+      console.error('❌ MongoDB connection error:', error);
+      process.exit(1);
+    });
+} else {
+  console.log('ℹ️ Skipping MongoDB connection (using Supabase)');
+}
 
 // Start server
 app.listen(PORT, () => {

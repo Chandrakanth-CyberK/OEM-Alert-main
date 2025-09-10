@@ -10,6 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.57.4",
     "express-validator": "^7.2.1",
     "jsonwebtoken": "^9.0.2",
     "lucide-react": "^0.344.0",

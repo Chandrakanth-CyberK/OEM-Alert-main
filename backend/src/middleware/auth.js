@@ -1,60 +1,26 @@
-const jwt = require('jsonwebtoken');
-const User = require('../models/User');
+const { supabase } = require('../lib/supabase');
 const logger = require('../utils/logger');
 
 const auth = async (req, res, next) => {
-  try {
-    const token = req.header('Authorization')?.replace('Bearer ', '');
-    
-    if (!token) {
-      return res.status(401).json({
-        success: false,
-        message: 'Access denied. No token provided.'
-      });
-    }
+	try {
+		const token = req.header('Authorization')?.replace('Bearer ', '');
+		if (!token) {
+			return res.status(401).json({ success: false, message: 'Access denied. No token provided.' });
+		}
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.id).select('-password');
-    
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid token. User not found.'
-      });
-    }
+		// Verify JWT with Supabase and get the user
+		const { data: { user }, error } = await supabase.auth.getUser(token);
+		if (error || !user) {
+			return res.status(401).json({ success: false, message: 'Invalid token.' });
+		}
 
-    if (!user.isActive) {
-      return res.status(401).json({
-        success: false,
-        message: 'Account is deactivated.'
-      });
-    }
-
-    req.user = user;
-    next();
-  } catch (error) {
-    logger.error('Authentication error:', error);
-    
-    if (error.name === 'JsonWebTokenError') {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid token.'
-      });
-    }
-    
-    if (error.name === 'TokenExpiredError') {
-      return res.status(401).json({
-        success: false,
-        message: 'Token expired.'
-      });
-    }
-
-    res.status(500).json({
-      success: false,
-      message: 'Authentication failed.',
-      error: error.message
-    });
-  }
+		// Attach minimal user info to request
+		req.user = { id: user.id, email: user.email };
+		next();
+	} catch (error) {
+		logger.error('Authentication error:', error);
+		res.status(500).json({ success: false, message: 'Authentication failed.', error: error.message });
+	}
 };
 
 module.exports = auth;

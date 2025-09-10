@@ -1,9 +1,9 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const { body, validationResult } = require('express-validator');
-const User = require('../models/User');
 const auth = require('../middleware/auth');
 const logger = require('../utils/logger');
+const { supabase, supabaseAdmin } = require('../lib/supabase');
 
 const router = express.Router();
 
@@ -34,7 +34,9 @@ router.post('/register', [
     .isIn(['admin', 'ciso', 'security_analyst', 'clinician', 'viewer'])
     .withMessage('Invalid role'),
   body('department')
-    .isIn(['Information Security', 'ICU', 'Emergency', 'Surgery', 'Radiology', 'Laboratory', 'IT', 'Administration'])
+    .optional()
+    .isString()
+    .isLength({ min: 2, max: 100 })
     .withMessage('Invalid department')
 ], async (req, res) => {
   try {
@@ -48,15 +50,6 @@ router.post('/register', [
     }
 
     const { name, email, password, role = 'viewer', department, phoneNumber } = req.body;
-
-    // Check if user already exists
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      return res.status(409).json({
-        success: false,
-        message: 'User with this email already exists'
-      });
-    }
 
     // Set default permissions based on role
     let permissions = [];
@@ -96,33 +89,35 @@ router.post('/register', [
         permissions = ['view_vulnerabilities', 'view_devices', 'view_alerts'];
     }
 
-    // Create user
-    const user = new User({
-      name,
+    // Create user in Supabase Auth
+    const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
       email,
       password,
-      role,
-      department,
-      permissions,
-      phoneNumber
+      options: { data: { name, role, department, phoneNumber, permissions } }
+    });
+    if (signUpError) {
+      return res.status(400).json({ success: false, message: signUpError.message });
+    }
+
+    const authUser = signUpData.user;
+
+    // Insert profile row (server-side, bypass RLS)
+    await supabaseAdmin.from('profiles').upsert({
+      id: authUser.id,
+      email,
+      role
     });
 
-    await user.save();
+    // Issue application JWT (optional). Alternatively, rely on Supabase session on the client.
+    const token = generateToken(authUser.id);
 
-    // Generate token
-    const token = generateToken(user._id);
-
-    // Remove password from response
-    const userResponse = user.toObject();
-    delete userResponse.password;
-
-    logger.info(`New user registered: ${email}`);
+    logger.info(`New user registered in Supabase: ${email}`);
 
     res.status(201).json({
       success: true,
       message: 'User registered successfully',
       data: {
-        user: userResponse,
+        user: { id: authUser.id, email, name, role, department, permissions, phoneNumber },
         token
       }
     });
@@ -158,49 +153,21 @@ router.post('/login', [
 
     const { email, password } = req.body;
 
-    // Find user and include password for comparison
-    const user = await User.findOne({ email }).select('+password');
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid credentials'
-      });
+    const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+    if (signInError) {
+      return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
-    // Check if user is active
-    if (!user.isActive) {
-      return res.status(401).json({
-        success: false,
-        message: 'Account is deactivated'
-      });
-    }
+    const { user: authUser, session } = signInData;
+    const token = session?.access_token || generateToken(authUser.id);
 
-    // Check password
-    const isPasswordValid = await user.comparePassword(password);
-    if (!isPasswordValid) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid credentials'
-      });
-    }
-
-    // Update last login
-    await user.updateLastLogin();
-
-    // Generate token
-    const token = generateToken(user._id);
-
-    // Remove password from response
-    const userResponse = user.toObject();
-    delete userResponse.password;
-
-    logger.info(`User logged in: ${email}`);
+    logger.info(`User logged in (Supabase): ${email}`);
 
     res.json({
       success: true,
       message: 'Login successful',
       data: {
-        user: userResponse,
+        user: { id: authUser.id, email: authUser.email, ...authUser.user_metadata },
         token
       }
     });
@@ -217,12 +184,18 @@ router.post('/login', [
 // Get current user profile
 router.get('/profile', auth, async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).select('-password');
-    
-    res.json({
-      success: true,
-      data: user
-    });
+    // Fetch profile from Supabase
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', req.user.id)
+      .single();
+
+    if (error) {
+      return res.status(404).json({ success: false, message: 'Profile not found' });
+    }
+
+    res.json({ success: true, data });
   } catch (error) {
     logger.error('Profile fetch error:', error);
     res.status(500).json({
@@ -269,24 +242,19 @@ router.put('/profile', auth, [
 
     const allowedUpdates = ['name', 'phoneNumber', 'alertPreferences'];
     const updates = {};
-    
-    Object.keys(req.body).forEach(key => {
-      if (allowedUpdates.includes(key)) {
-        updates[key] = req.body[key];
-      }
-    });
+    Object.keys(req.body).forEach(key => { if (allowedUpdates.includes(key)) { updates[key] = req.body[key]; } });
 
-    const user = await User.findByIdAndUpdate(
-      req.user._id,
-      updates,
-      { new: true, runValidators: true }
-    ).select('-password');
+    const { data, error } = await supabase
+      .from('profiles')
+      .update(updates)
+      .eq('id', req.user.id)
+      .select()
+      .single();
+    if (error) {
+      return res.status(400).json({ success: false, message: error.message });
+    }
 
-    res.json({
-      success: true,
-      message: 'Profile updated successfully',
-      data: user
-    });
+    res.json({ success: true, message: 'Profile updated successfully', data });
   } catch (error) {
     logger.error('Profile update error:', error);
     res.status(500).json({
@@ -320,28 +288,23 @@ router.put('/change-password', auth, [
 
     const { currentPassword, newPassword } = req.body;
 
-    // Get user with password
-    const user = await User.findById(req.user._id).select('+password');
-    
-    // Verify current password
-    const isCurrentPasswordValid = await user.comparePassword(currentPassword);
-    if (!isCurrentPasswordValid) {
-      return res.status(400).json({
-        success: false,
-        message: 'Current password is incorrect'
-      });
+    // Re-authenticate with current password
+    const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+      email: req.user.email,
+      password: currentPassword
+    });
+    if (signInError) {
+      return res.status(400).json({ success: false, message: 'Current password is incorrect' });
     }
 
-    // Update password
-    user.password = newPassword;
-    await user.save();
+    // Update password via admin
+    const { error } = await supabaseAdmin.auth.admin.updateUserById(req.user.id, { password: newPassword });
+    if (error) {
+      return res.status(400).json({ success: false, message: error.message });
+    }
 
-    logger.info(`Password changed for user: ${user.email}`);
-
-    res.json({
-      success: true,
-      message: 'Password changed successfully'
-    });
+    logger.info(`Password changed for user: ${req.user.email}`);
+    res.json({ success: true, message: 'Password changed successfully' });
   } catch (error) {
     logger.error('Password change error:', error);
     res.status(500).json({
@@ -355,11 +318,7 @@ router.put('/change-password', auth, [
 // Logout (client-side token removal, but we can log it)
 router.post('/logout', auth, (req, res) => {
   logger.info(`User logged out: ${req.user.email}`);
-  
-  res.json({
-    success: true,
-    message: 'Logged out successfully'
-  });
+  res.json({ success: true, message: 'Logged out successfully' });
 });
 
 module.exports = router;
